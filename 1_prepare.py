@@ -14,8 +14,8 @@ import os
 
 # --- Settings ---
 # You can change these paths if you move folders
-INPUT_FOLDER = r"c:\Users\Bruger\Desktop\StockDataTRMEXPERIMENT\StockData"
-OUTPUT_FOLDER = "data"
+INPUT_FOLDER = os.getenv("TRM_INPUT_DATA", "StockData")
+OUTPUT_FOLDER = os.getenv("TRM_OUTPUT_DATA", "data")
 
 def main():
     print("🔹 ExperimentLM V4: Data Preparation")
