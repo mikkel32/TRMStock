@@ -12,6 +12,7 @@ Usage:
 import os
 import time
 import math
+import argparse
 import numpy as np
 import torch
 from src.model import TRM, TRMConfig # Import from src/
@@ -41,13 +42,13 @@ config = TRMConfig(
 BLOCK_SIZE = config.max_seq_len
 GRADIENT_ACCUMULATION_STEPS = 8
 LEARNING_RATE = 1e-3 
-MAX_ITERS = 10000
+MAX_ITERS = 4960 # ~650M Tokens / 131,072 tokens per step
 WARMUP_ITERS = 200
-LR_DECAY_ITERS = 10000
+LR_DECAY_ITERS = 4960
 MIN_LR = 1e-4
 WEIGHT_DECAY = 0.1
 GRAD_CLIP = 1.0
-EVAL_INTERVAL = 100   # More frequent "Eye Test"
+EVAL_INTERVAL = 50   # More frequent "Eye Test"
 LOG_INTERVAL = 10
 EVAL_ITERS = 50
 
@@ -89,6 +90,13 @@ def estimate_tokens():
     return total_tokens
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--batch', type=int, default=8, help='Batch size')
+    args = parser.parse_args()
+    
+    global BATCH_SIZE
+    BATCH_SIZE = args.batch
+
     print("🔹 ExperimentLM V4: Training")
     print(f"   Device: {DEVICE}")
     print(f"   Batch Size: {BATCH_SIZE}")
@@ -140,6 +148,7 @@ def main():
             model.eval()
             losses = torch.zeros(EVAL_ITERS)
             accuracies = torch.zeros(EVAL_ITERS)
+            return_accuracies = torch.zeros(EVAL_ITERS)
             
             with torch.no_grad():
                 for k in range(EVAL_ITERS):
@@ -152,10 +161,25 @@ def main():
                     predictions = torch.argmax(logits, dim=-1) # (B, T)
                     acc = (predictions == Yval).float().mean()
                     accuracies[k] = acc.item()
+
+                    # Return Token Accuracy (Every 5th token is Ret(t))
+                    # Tokens: [DOW, Hour, Volat, Vol, Ret]
+                    T = Yval.shape[1]
+                    indices = torch.arange(T, device=DEVICE)
+                    is_return_token = (indices % 5) == 4
+                    
+                    # predictions: (B, T), Yval: (B, T)
+                    # Select only columns where is_return_token is True
+                    pred_ret = predictions[:, is_return_token]
+                    targ_ret = Yval[:, is_return_token]
+                    
+                    acc_ret = (pred_ret == targ_ret).float().mean()
+                    return_accuracies[k] = acc_ret.item()
                     
             val_loss = losses.mean()
             val_acc = accuracies.mean()
-            print(f"🔍 VAL LOSS: {val_loss:.4f} | ACCURACY: {val_acc*100:.2f}%")
+            val_ret_acc = return_accuracies.mean()
+            print(f"🔍 VAL LOSS: {val_loss:.4f} | ACCURACY: {val_acc*100:.2f}% | RETURN ACCURACY: {val_ret_acc*100:.2f}%")
             
             torch.save(model.state_dict(), os.path.join(OUT_DIR, f"ckpt_{iter_num}.pt"))
             model.train()
