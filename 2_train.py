@@ -120,6 +120,31 @@ def main():
     optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY, betas=(0.9, 0.95))
     
     print("🚀 Starting Loop...")
+
+    # --- Load Zero Token ID ---
+    bins_path = os.path.join(DATA_DIR, "bins.npy")
+    if os.path.exists(bins_path):
+        bins = np.load(bins_path, allow_pickle=True).item()
+        
+        # Recalculate Offsets (Must match dataset.py)
+        # Schema: [DOW, Hour, Volat(t-1), Vol(t-1), Ret(t)]
+        OFFSET_DOW = 0
+        OFFSET_HOUR = 7
+        OFFSET_VOLAT = 31
+        OFFSET_VOL = OFFSET_VOLAT + len(bins['volat_lag']) + 1
+        OFFSET_RET = OFFSET_VOL + len(bins['vol_lag']) + 1
+        
+        # Find ID for 0.0 return
+        # np.digitize returns 1-based index for bins, so we subtract 1 or keep logic consistent with dataset.py
+        # dataset.py uses: inds = np.digitize(values, bins) -> returns index i such that bins[i-1] <= x < bins[i]
+        # We need to find which bin 0.0 falls into.
+        zero_bin_idx = np.digitize([0.0], bins['log_ret'])[0]
+        ZERO_TOKEN_ID = int(OFFSET_RET + zero_bin_idx)
+        print(f"🎯 Zero Token ID: {ZERO_TOKEN_ID} (Offset: {OFFSET_RET}, Bin: {zero_bin_idx})")
+    else:
+        ZERO_TOKEN_ID = None
+        print("⚠️  bins.npy not found. Cannot calculate Actionable Accuracy.")
+
     X, Y = get_batch('train') 
     t0 = time.time()
     
@@ -149,6 +174,7 @@ def main():
             losses = torch.zeros(EVAL_ITERS)
             accuracies = torch.zeros(EVAL_ITERS)
             return_accuracies = torch.zeros(EVAL_ITERS)
+            actionable_accuracies = torch.zeros(EVAL_ITERS)
             
             with torch.no_grad():
                 for k in range(EVAL_ITERS):
@@ -175,11 +201,25 @@ def main():
                     
                     acc_ret = (pred_ret == targ_ret).float().mean()
                     return_accuracies[k] = acc_ret.item()
+
+                    # Actionable Accuracy (Non-Zero Targets)
+                    if ZERO_TOKEN_ID is not None:
+                        # Identify where the MARKET actually moved (Target != Zero)
+                        is_moving = (targ_ret != ZERO_TOKEN_ID)
+                        
+                        if is_moving.sum() > 0:
+                            acc_actionable = (pred_ret[is_moving] == targ_ret[is_moving]).float().mean()
+                            actionable_accuracies[k] = acc_actionable.item()
+                        else:
+                            # If no moves in this batch, ignore (use NaN or just 0 if rare)
+                            actionable_accuracies[k] = float('nan') 
                     
             val_loss = losses.mean()
             val_acc = accuracies.mean()
             val_ret_acc = return_accuracies.mean()
-            print(f"🔍 VAL LOSS: {val_loss:.4f} | ACCURACY: {val_acc*100:.2f}% | RETURN ACCURACY: {val_ret_acc*100:.2f}%")
+            val_act_acc = np.nanmean(actionable_accuracies.numpy()) # Handle NaNs
+            
+            print(f"🔍 VAL LOSS: {val_loss:.4f} | ACCURACY: {val_acc*100:.2f}% | RETURN ACCURACY: {val_ret_acc*100:.2f}% | ACTIONABLE: {val_act_acc*100:.2f}%")
             
             torch.save(model.state_dict(), os.path.join(OUT_DIR, f"ckpt_{iter_num}.pt"))
             model.train()
