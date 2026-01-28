@@ -1,0 +1,108 @@
+{
+  "ticker": "BEPC",
+  "ok": true,
+  "message": "ok in 74.63s; provenance=yahoo_only",
+  "sources": [
+    {
+      "provider": "yahoo",
+      "interval": "1d",
+      "start": "2025-01-02",
+      "end": "2025-12-08",
+      "period": null,
+      "rows": 2178,
+      "note": "start adjusted to 2025-01-02"
+    },
+    {
+      "provider": "stooq",
+      "interval": "1d",
+      "start": "2025-01-01",
+      "end": null,
+      "period": null,
+      "rows": 0,
+      "note": "no data"
+    },
+    {
+      "provider": "alphavantage",
+      "interval": "1d",
+      "start": "2025-01-01",
+      "end": null,
+      "period": null,
+      "rows": 0,
+      "note": "no key"
+    },
+    {
+      "provider": "tiingo",
+      "interval": "1d",
+      "start": "2025-01-01",
+      "end": null,
+      "period": null,
+      "rows": 0,
+      "note": "no key"
+    },
+    {
+      "provider": "polygon",
+      "interval": "1d",
+      "start": "2025-01-01",
+      "end": null,
+      "period": null,
+      "rows": 0,
+      "note": "no key"
+    },
+    {
+      "provider": "iex",
+      "interval": "1d",
+      "start": "2025-01-01",
+      "end": null,
+      "period": null,
+      "rows": 0,
+      "note": "no key"
+    },
+    {
+      "provider": "yahoo+synthetic",
+      "interval": "1m",
+      "start": "2024-12-26T14:30Z",
+      "end": "2025-12-08T20:59Z",
+      "period": "347d",
+      "rows": 119647,
+      "note": "chunked into <= 7d windows (requested 347d); alpha_vantage alpha_vantage key missing; polygon polygon key missing; cache rows 0->119647; yahoo stitched 4 segments; 3 empty windows; intraday 320d; synthetic fill intraday 320d; coverage ~346.6d (missing end ~0.4d)"
+    }
+  ],
+  "coverage": {
+    "1m": {
+      "first": "2025-01-01T16:44:00Z",
+      "last": "2025-11-24T19:49:00Z",
+      "rows": "1650"
+    },
+    "1d": {
+      "first": "2025-11-18T09:30:00Z",
+      "last": "2025-11-24T15:59:00Z",
+      "rows": "1933"
+    }
+  },
+  "fields": [
+    "open",
+    "high",
+    "low",
+    "close",
+    "adj_close",
+    "volume",
+    "open_adj",
+    "high_adj",
+    "low_adj",
+    "close_adj"
+  ],
+  "adjusted": true,
+  "calendar_aligned": true,
+  "fx_base": "USD",
+  "currency": "USD",
+  "fx_pair": null,
+  "fundamentals": {
+    "currency": "USD",
+    "exchange": "NYQ",
+    "sector": "Utilities",
+    "industry": "Utilities - Renewable",
+    "longName": "Brookfield Renewable Corporation",
+    "shortName": "Brookfield Renewable Corporatio",
+    "quoteType": "EQUITY"
+  }
+}

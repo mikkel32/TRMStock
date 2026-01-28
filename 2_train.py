@@ -24,14 +24,15 @@ OUT_DIR = "checkpoints"
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 BATCH_SIZE = 8 # Prevent OOM
 
-# Model Config (V4)
+# Model Config (V4) - Optimized for ~650M Tokens (Chinchilla)
+# Params: ~34M (Perfect match for 650M tokens)
 config = TRMConfig(
     vocab_size=8192, 
-    dim=384,
+    dim=768,         # 384 -> 768
     n_layers=4,      
     n_recurrence=3,  
-    n_heads=6,
-    n_kv_heads=2,    
+    n_heads=12,      # 6 -> 12
+    n_kv_heads=4,    # 2 -> 4
     max_seq_len=2048,
     dropout=0.0
 )
@@ -46,7 +47,7 @@ LR_DECAY_ITERS = 10000
 MIN_LR = 1e-4
 WEIGHT_DECAY = 0.1
 GRAD_CLIP = 1.0
-EVAL_INTERVAL = 500
+EVAL_INTERVAL = 100   # More frequent "Eye Test"
 LOG_INTERVAL = 10
 EVAL_ITERS = 50
 
@@ -75,6 +76,18 @@ def get_lr(it):
     coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))
     return MIN_LR + coeff * (LEARNING_RATE - MIN_LR)
 
+def estimate_tokens():
+    train_path = os.path.join(DATA_DIR, 'train.bin')
+    val_path = os.path.join(DATA_DIR, 'val.bin')
+    
+    total_bytes = 0
+    if os.path.exists(train_path): total_bytes += os.path.getsize(train_path)
+    if os.path.exists(val_path): total_bytes += os.path.getsize(val_path)
+    
+    # uint16 = 2 bytes per token
+    total_tokens = total_bytes // 2
+    return total_tokens
+
 def main():
     print("🔹 ExperimentLM V4: Training")
     print(f"   Device: {DEVICE}")
@@ -82,9 +95,19 @@ def main():
     
     os.makedirs(OUT_DIR, exist_ok=True)
     
+    # --- Chinchilla Analysis ---
+    total_tokens = estimate_tokens()
+    optimal_params = total_tokens / 20.0
+    print(f"📊 Dataset: {total_tokens/1e6:.1f}M Tokens")
+    print(f"🎯 Optimal Params (Chinchilla): {optimal_params/1e6:.1f}M")
+    
     torch.manual_seed(1337)
     model = TRM(config).to(DEVICE)
-    print(f"🧠 Model Parameters: {sum(p.numel() for p in model.parameters())/1e6:.2f}M")
+    current_params = sum(p.numel() for p in model.parameters())
+    print(f"🧠 Model Parameters: {current_params/1e6:.2f}M")
+    
+    ratio = current_params / optimal_params if optimal_params > 0 else 0
+    print(f"⚖️  Ratio (Model/Optimal): {ratio:.2f}x (1.0 is perfect)")
     
     optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY, betas=(0.9, 0.95))
     
@@ -113,15 +136,27 @@ def main():
             t0 = time.time()
             
         if iter_num > 0 and iter_num % EVAL_INTERVAL == 0:
-            print("📉 Evaluating...")
+            print("📉 Evaluating & Eye Test...")
             model.eval()
             losses = torch.zeros(EVAL_ITERS)
+            accuracies = torch.zeros(EVAL_ITERS)
+            
             with torch.no_grad():
                 for k in range(EVAL_ITERS):
                     Xval, Yval = get_batch('val')
-                    _, loss = model(Xval, Yval)
+                    logits, loss = model(Xval, Yval)
                     losses[k] = loss.item()
-            print(f"🔍 VAL LOSS: {losses.mean():.4f}")
+                    
+                    # Calculate Accuracy
+                    # logits: (B, T, V)
+                    predictions = torch.argmax(logits, dim=-1) # (B, T)
+                    acc = (predictions == Yval).float().mean()
+                    accuracies[k] = acc.item()
+                    
+            val_loss = losses.mean()
+            val_acc = accuracies.mean()
+            print(f"🔍 VAL LOSS: {val_loss:.4f} | ACCURACY: {val_acc*100:.2f}%")
+            
             torch.save(model.state_dict(), os.path.join(OUT_DIR, f"ckpt_{iter_num}.pt"))
             model.train()
 

@@ -1,0 +1,103 @@
+{
+  "ticker": "ARMK",
+  "ok": true,
+  "message": "ok in 91.19s; provenance=yahoo_only",
+  "sources": [
+    {
+      "provider": "yahoo",
+      "interval": "1d",
+      "start": "2025-01-02",
+      "end": "2025-12-08",
+      "period": null,
+      "rows": 234,
+      "note": "start adjusted to 2025-01-02"
+    },
+    {
+      "provider": "stooq",
+      "interval": "1d",
+      "start": "2025-01-01",
+      "end": null,
+      "period": null,
+      "rows": 0,
+      "note": "no data"
+    },
+    {
+      "provider": "alphavantage",
+      "interval": "1d",
+      "start": "2025-01-01",
+      "end": null,
+      "period": null,
+      "rows": 0,
+      "note": "no key"
+    },
+    {
+      "provider": "tiingo",
+      "interval": "1d",
+      "start": "2025-01-01",
+      "end": null,
+      "period": null,
+      "rows": 0,
+      "note": "no key"
+    },
+    {
+      "provider": "polygon",
+      "interval": "1d",
+      "start": "2025-01-01",
+      "end": null,
+      "period": null,
+      "rows": 0,
+      "note": "no key"
+    },
+    {
+      "provider": "iex",
+      "interval": "1d",
+      "start": "2025-01-01",
+      "end": null,
+      "period": null,
+      "rows": 0,
+      "note": "no key"
+    },
+    {
+      "provider": "yahoo+synthetic",
+      "interval": "1m",
+      "start": "2024-12-26T14:30Z",
+      "end": "2025-12-08T20:59Z",
+      "period": "347d",
+      "rows": 93236,
+      "note": "chunked into <= 7d windows (requested 347d); alpha_vantage alpha_vantage key missing; polygon polygon key missing; cache rows 0->93236; yahoo stitched 4 segments; 3 empty windows; partial errors: No objects to concatenate; daily 214d; intraday 7d; synthetic fill daily 214d, intraday 7d; coverage ~346.6d (missing end ~0.4d)"
+    }
+  ],
+  "coverage": {
+    "1m": {
+      "first": "2024-12-26T14:30:00Z",
+      "last": "2025-11-10T20:59:00Z",
+      "rows": "85515"
+    },
+    "1d": {
+      "first": "2025-01-02T00:00:00Z",
+      "last": "2025-12-08T00:00:00Z",
+      "rows": "232"
+    }
+  },
+  "fields": [
+    "open",
+    "high",
+    "low",
+    "close",
+    "adj_close",
+    "volume",
+    "open_adj",
+    "high_adj",
+    "low_adj",
+    "close_adj"
+  ],
+  "adjusted": true,
+  "calendar_aligned": true,
+  "fx_base": "USD",
+  "currency": "USD",
+  "fx_pair": null,
+  "fundamentals": {
+    "currency": "USD",
+    "exchange": "NYQ"
+  }
+}
