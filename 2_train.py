@@ -204,16 +204,40 @@ def main():
 
                     # Actionable Accuracy (Non-Zero Targets)
                     if ZERO_TOKEN_ID is not None:
-                        # Identify where the MARKET actually moved (Target != Zero)
                         is_moving = (targ_ret != ZERO_TOKEN_ID)
-                        
                         if is_moving.sum() > 0:
                             acc_actionable = (pred_ret[is_moving] == targ_ret[is_moving]).float().mean()
                             actionable_accuracies[k] = acc_actionable.item()
                         else:
-                            # If no moves in this batch, ignore (use NaN or just 0 if rare)
-                            actionable_accuracies[k] = float('nan') 
+                            actionable_accuracies[k] = float('nan')
+            
+            # --- Debug: Decode a Sample ---
+            # Pick the first sequence of the last batch
+            # Yval: (B, T) -> Take batch 0
+            # Tokens are [DOW, Hour, Volat, Vol, Ret] repeating
+            try:
+                # Load bins if not loaded (variables from main scope)
+                if 'bins' in locals():
+                    # We need to reverse decode ONE sequence
+                    # Just grab the last 5 tokens (one step)
+                    # Yval is targets. Xval is inputs.
+                    # Let's look at a sequence of inputs Xval[0]
+                    sample_seq = Xval[0, -10:].cpu().numpy() # Last 2 steps
+                    print(f"\n🔍 Debug Sample (Last 10 tokens of Batch 0): {sample_seq}")
                     
+                    # Simple decoder helper (approximate)
+                    def decode_token(tid):
+                        if tid < OFFSET_HOUR: return f"DOW={tid}"
+                        if tid < OFFSET_VOLAT: return f"Hr={tid-OFFSET_HOUR}"
+                        if tid < OFFSET_VOL: return f"VolaId={tid-OFFSET_VOLAT}"
+                        if tid < OFFSET_RET: return f"VolId={tid-OFFSET_VOL}"
+                        return f"RetId={tid-OFFSET_RET}"
+                        
+                    decoded = [decode_token(t) for t in sample_seq]
+                    print(f"   Decoded: {' | '.join(decoded)}")
+            except Exception as e:
+                print(f"Debug Decode Failed: {e}")
+
             val_loss = losses.mean()
             val_acc = accuracies.mean()
             val_ret_acc = return_accuracies.mean()

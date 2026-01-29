@@ -14,7 +14,12 @@ import os
 
 # --- Settings ---
 # You can change these paths if you move folders
+# --- Settings ---
+# You can change these paths if you move folders
 INPUT_FOLDER = os.getenv("TRM_INPUT_DATA", "StockData")
+if not os.path.exists(INPUT_FOLDER) and os.path.exists(os.path.join("..", "StockData")):
+    INPUT_FOLDER = os.path.join("..", "StockData")
+
 OUTPUT_FOLDER = os.getenv("TRM_OUTPUT_DATA", "data")
 
 def main():

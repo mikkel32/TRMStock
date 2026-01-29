@@ -28,6 +28,7 @@ class DataEngine:
             for file in files:
                 if file.endswith(".csv"):
                     target_files.append(os.path.join(root, file))
+        target_files.sort() # Ensure deterministic order
         print(f"📝 Found {len(target_files)} CSV files.")
         return target_files
 
@@ -37,6 +38,12 @@ class DataEngine:
         """
         try:
             df = pd.read_csv(file_path, parse_dates=['timestamp'], index_col='timestamp')
+            df.sort_index(inplace=True) # Guarantee chronological order (V4 Fix for Leak)
+            
+            # Debug: Verify Order for User
+            if "AAPL.csv" in file_path or "NVDA.csv" in file_path:
+                print(f"\n[VERIFY] {os.path.basename(file_path)}: {df.index[0]} -> {df.index[-1]}")
+                print(f"         Sorted? {df.index.is_monotonic_increasing}")
             
             # Map columns
             cols = {c.lower(): c for c in df.columns}
@@ -120,7 +127,11 @@ class DataEngine:
                 print("❌ Quantiles not found.")
                 return
 
-        print("🍱 Tokenizing V4 Causal Stream...")
+        print("🍱 Tokenizing V4 Causal Stream (Strict Time Split)...")
+        # Ensure cutoff is UTC to match the data.
+        # Data found to start ~Dec 2024. Using Oct 2025 as split (~80/20).
+        CUTOFF_DATE = pd.Timestamp("2025-10-01").tz_localize("UTC")
+        print(f"📅 Split Date: {CUTOFF_DATE}")
         
         # Schema: [DOW, Hour, Volat(t-1), Vol(t-1), Ret(t)]
         OFFSET_DOW = 0
@@ -138,37 +149,42 @@ class DataEngine:
         f_train = open(train_path, "wb")
         f_val = open(val_path, "wb")
         
-        val_split_idx = int(len(files) * 0.9)
+        total_toks_train = 0
+        total_toks_val = 0
         
-        total_toks = 0
-        
-        for i, f in enumerate(tqdm(files, desc="Tokenizing", unit="file")):
+        for f in tqdm(files, desc="Tokenizing", unit="file"):
             feat = self.process_file(f)
             if feat is None: continue
             
-            t_dow = (feat['dow'].values + OFFSET_DOW).astype(np.uint16)
-            t_hour = (feat['hour'].values + OFFSET_HOUR).astype(np.uint16)
+            # Row-level Time Split
+            mask_val = feat.index >= CUTOFF_DATE
+            mask_train = ~mask_val
             
-            def quantize(values, bins, offset):
-                inds = np.digitize(values, bins) 
-                return (inds + offset).astype(np.uint16)
-            
-            t_volat = quantize(feat['volat_lag'].values, self.bins['volat_lag'], OFFSET_VOLAT)
-            t_vol = quantize(feat['vol_lag'].values, self.bins['vol_lag'], OFFSET_VOL)
-            t_ret = quantize(feat['log_ret'].values, self.bins['log_ret'], OFFSET_RET)
-            
-            stack = np.vstack([t_dow, t_hour, t_volat, t_vol, t_ret])
-            flat = stack.T.flatten()
-            
-            if i >= val_split_idx:
-                f_val.write(flat.tobytes())
-            else:
-                f_train.write(flat.tobytes())
+            def process_subset(subset, file_handle):
+                if len(subset) == 0: return 0
                 
-            total_toks += len(flat)
+                t_dow = (subset['dow'].values + OFFSET_DOW).astype(np.uint16)
+                t_hour = (subset['hour'].values + OFFSET_HOUR).astype(np.uint16)
+                
+                def quantize(values, bins, offset):
+                    inds = np.digitize(values, bins) 
+                    return (inds + offset).astype(np.uint16)
+                
+                t_volat = quantize(subset['volat_lag'].values, self.bins['volat_lag'], OFFSET_VOLAT)
+                t_vol = quantize(subset['vol_lag'].values, self.bins['vol_lag'], OFFSET_VOL)
+                t_ret = quantize(subset['log_ret'].values, self.bins['log_ret'], OFFSET_RET)
+                
+                stack = np.vstack([t_dow, t_hour, t_volat, t_vol, t_ret])
+                flat = stack.T.flatten()
+                file_handle.write(flat.tobytes())
+                return len(flat)
+
+            total_toks_train += process_subset(feat[mask_train], f_train)
+            total_toks_val += process_subset(feat[mask_val], f_val)
             
         f_train.close()
         f_val.close()
         print(f"✅ Data Preparation Complete.")
-        print(f"📊 Total Tokens: {total_toks:,}")
+        print(f"📊 Train Tokens: {total_toks_train:,}")
+        print(f"📊 Val Tokens:   {total_toks_val:,}")
         print(f"💾 Saved to {self.output_dir}/")
