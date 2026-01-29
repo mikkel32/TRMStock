@@ -22,14 +22,22 @@ class DataEngine:
         self.bins = {} 
 
     def scan_files(self):
-        print(f"🔍 Scanning {self.data_dir}...")
+        print(f"🔍 Scanning {self.data_dir} (SNIPER MODE: clean/1m.csv)...")
         target_files = []
         for root, dirs, files in os.walk(self.data_dir):
             for file in files:
-                if file.endswith(".csv"):
-                    target_files.append(os.path.join(root, file))
+                # SNIPER FILTER: Only allow 'clean/1m.csv'
+                if file != "1m.csv":
+                    continue
+                
+                # Check parent folder is 'clean'
+                if os.path.basename(root) != "clean":
+                    continue
+                    
+                target_files.append(os.path.join(root, file))
+                
         target_files.sort() # Ensure deterministic order
-        print(f"📝 Found {len(target_files)} CSV files.")
+        print(f"📝 Found {len(target_files)} CLEAN 1m CSV files.")
         return target_files
 
     def process_file(self, file_path):
@@ -118,7 +126,7 @@ class DataEngine:
             
         np.save(os.path.join(self.output_dir, "bins.npy"), self.bins)
 
-    def tokenize_and_save(self, files):
+    def tokenize_and_save(self, files, limit=None):
         bin_path = os.path.join(self.output_dir, "bins.npy")
         if not hasattr(self, 'bins') or not self.bins:
             if os.path.exists(bin_path):
@@ -127,12 +135,25 @@ class DataEngine:
                 print("❌ Quantiles not found.")
                 return
 
-        print("🍱 Tokenizing V4 Causal Stream (Strict Time Split)...")
-        # Ensure cutoff is UTC to match the data.
-        # Data found to start ~Dec 2024. Using Oct 2025 as split (~80/20).
-        CUTOFF_DATE = pd.Timestamp("2025-10-01").tz_localize("UTC")
-        print(f"📅 Split Date: {CUTOFF_DATE}")
+        print(f"🍱 Tokenizing V4 Solid Split (File-Based, Limit={limit})...")
         
+        # 1. Random Selection
+        np.random.seed(42)
+        if limit and len(files) > limit:
+            selected_files = np.random.choice(files, limit, replace=False)
+        else:
+            selected_files = files
+            
+        print(f"📝 Selected {len(selected_files)} files for SOLID verification.")
+        
+        # 2. File-Based Split (70/30)
+        split_idx = int(len(selected_files) * 0.7)
+        train_files = selected_files[:split_idx]
+        val_files = selected_files[split_idx:]
+        
+        print(f"📊 Train Files: {len(train_files)} (e.g. {os.path.basename(train_files[0])})")
+        print(f"📊 Val Files:   {len(val_files)}   (e.g. {os.path.basename(val_files[0])})")
+
         # Schema: [DOW, Hour, Volat(t-1), Vol(t-1), Ret(t)]
         OFFSET_DOW = 0
         OFFSET_HOUR = 7
@@ -152,38 +173,48 @@ class DataEngine:
         total_toks_train = 0
         total_toks_val = 0
         
-        for f in tqdm(files, desc="Tokenizing", unit="file"):
-            feat = self.process_file(f)
-            if feat is None: continue
-            
-            # Row-level Time Split
-            mask_val = feat.index >= CUTOFF_DATE
-            mask_train = ~mask_val
-            
-            def process_subset(subset, file_handle):
-                if len(subset) == 0: return 0
+        def process_set(file_list, file_handle, split_name):
+            total_tokens = 0
+            count = 0
+            for f in tqdm(file_list, desc=f"Tokenizing {split_name}", unit="file"):
+                feat = self.process_file(f)
+                if feat is None: continue
                 
-                t_dow = (subset['dow'].values + OFFSET_DOW).astype(np.uint16)
-                t_hour = (subset['hour'].values + OFFSET_HOUR).astype(np.uint16)
+                # Debug Verification: Show Relative Path (Ticker/clean/1m.csv)
+                # Assuming data structure: .../Ticker/clean/1m.csv
+                # We can try to grab the last 3 parts of the path
+                rel_parts = f.replace("\\", "/").split("/")[-3:]
+                rel_name = "/".join(rel_parts)
+                
+                if count < 5: # Print first 5 to be sure
+                     print(f"   [VERIFY {split_name}] {rel_name}: {feat.index[0]} -> {feat.index[-1]}")
+                
+                t_dow = (feat['dow'].values + OFFSET_DOW).astype(np.uint16)
+                t_hour = (feat['hour'].values + OFFSET_HOUR).astype(np.uint16)
                 
                 def quantize(values, bins, offset):
                     inds = np.digitize(values, bins) 
                     return (inds + offset).astype(np.uint16)
                 
-                t_volat = quantize(subset['volat_lag'].values, self.bins['volat_lag'], OFFSET_VOLAT)
-                t_vol = quantize(subset['vol_lag'].values, self.bins['vol_lag'], OFFSET_VOL)
-                t_ret = quantize(subset['log_ret'].values, self.bins['log_ret'], OFFSET_RET)
+                t_volat = quantize(feat['volat_lag'].values, self.bins['volat_lag'], OFFSET_VOLAT)
+                t_vol = quantize(feat['vol_lag'].values, self.bins['vol_lag'], OFFSET_VOL)
+                t_ret = quantize(feat['log_ret'].values, self.bins['log_ret'], OFFSET_RET)
                 
                 stack = np.vstack([t_dow, t_hour, t_volat, t_vol, t_ret])
                 flat = stack.T.flatten()
                 file_handle.write(flat.tobytes())
-                return len(flat)
+                total_tokens += len(flat)
+                count += 1
+            return total_tokens
 
-            total_toks_train += process_subset(feat[mask_train], f_train)
-            total_toks_val += process_subset(feat[mask_val], f_val)
+        total_toks_train = process_set(train_files, f_train, "TRAIN")
+        total_toks_val = process_set(val_files, f_val, "VAL")
             
         f_train.close()
         f_val.close()
+        
+        print(f"📊 Train Tokens: {total_toks_train}")
+        print(f"📊 Val Tokens:   {total_toks_val}")
         print(f"✅ Data Preparation Complete.")
         print(f"📊 Train Tokens: {total_toks_train:,}")
         print(f"📊 Val Tokens:   {total_toks_val:,}")

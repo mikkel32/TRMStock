@@ -23,34 +23,41 @@ OUT_DIR = "checkpoints"
 
 # System
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
-BATCH_SIZE = 8 # Prevent OOM
+BATCH_SIZE = 8 # Fit VRAM
 
-# Model Config (V4) - Optimized for ~650M Tokens (Chinchilla)
-# Params: ~34M (Perfect match for 650M tokens)
+# Model Config (V4) - Optimized for 27.9M Tokens (Chinchilla Verified)
+# Target Params: ~1.4M (D/20)
+# Calculation: 12 * 3(layers) * 192^2 = ~1.33M Params
+# Ratio: ~0.95x (Near Perfect 1.0)
 config = TRMConfig(
     vocab_size=8192, 
-    dim=768,         # 384 -> 768
-    n_layers=4,      
-    n_recurrence=3,  
-    n_heads=12,      # 6 -> 12
-    n_kv_heads=4,    # 2 -> 4
+    dim=192,         # Reduced to 192
+    n_layers=3,      # Reduced to 3
+    n_recurrence=2,  # Reduced recurrence slightly
+    n_heads=6,       # 192 / 32 = 6 heads
+    n_kv_heads=2,    
     max_seq_len=2048,
-    dropout=0.0
+    dropout=0.1
 )
 
 # Training Config
 BLOCK_SIZE = config.max_seq_len
 GRADIENT_ACCUMULATION_STEPS = 8
-LEARNING_RATE = 1e-3 
-MAX_ITERS = 4960 # ~650M Tokens / 131,072 tokens per step
-WARMUP_ITERS = 200
-LR_DECAY_ITERS = 4960
-MIN_LR = 1e-4
+# The Math: 262,008,610 Tokens
+# Batch 8 * Block 2048 * GradAcc 8 = 131,072 Tokens/Step
+# 262,008,610 / 131,072 = 1998.9 Steps
+# Round up to 2000 for full coverage
+TRAIN_EPOCHS = 1
+MAX_ITERS = 2000 # Strictly 1 Epoch (262M Tokens)
+LEARNING_RATE = 3e-4 
+WARMUP_ITERS = 100
+LR_DECAY_ITERS = MAX_ITERS
+MIN_LR = 6e-5
 WEIGHT_DECAY = 0.1
 GRAD_CLIP = 1.0
-EVAL_INTERVAL = 50   # More frequent "Eye Test"
-LOG_INTERVAL = 10
-EVAL_ITERS = 50
+EVAL_INTERVAL = 50   
+LOG_INTERVAL = 5
+EVAL_ITERS = 20
 
 def get_batch(split):
     filename = os.path.join(DATA_DIR, f'{split}.bin')
@@ -88,6 +95,93 @@ def estimate_tokens():
     # uint16 = 2 bytes per token
     total_tokens = total_bytes // 2
     return total_tokens
+
+@torch.no_grad()
+def generate_dream(model, idx, max_new_tokens, offsets, temperature=1.0, top_k=None, suppress_zero=False, zero_token_id=None):
+    # Unpack offsets for Grammar Constraint
+    off_dow = offsets['DOW']
+    off_hour = offsets['HOUR']
+    off_volat = offsets['VOLAT']
+    off_vol = offsets['VOL']
+    off_ret = offsets['RET']
+    
+    for step_i in range(max_new_tokens):
+        # 1. Determine Expected Type
+        curr_len = idx.size(1)
+        step_type = (curr_len) % 5
+        
+        # 2. Forward
+        idx_cond = idx if idx.size(1) <= config.max_seq_len else idx[:, -config.max_seq_len:]
+        logits, _ = model(idx_cond)
+        logits = logits[:, -1, :] / temperature
+        
+        # 3. Apply Grammar Constraint
+        start, end = 0, 0
+        if step_type == 0: start, end = 0, off_hour
+        elif step_type == 1: start, end = off_hour, off_volat
+        elif step_type == 2: start, end = off_volat, off_vol
+        elif step_type == 3: start, end = off_vol, off_ret
+        elif step_type == 4: start, end = off_ret, off_ret + 2000 
+            
+        full_masked = torch.full_like(logits, -float('Inf'))
+        full_masked[:, start:end] = logits[:, start:end]
+        logits = full_masked
+
+        # 4. Zero Suppression (Forced Motion)
+        if suppress_zero and zero_token_id is not None:
+             logits[:, zero_token_id] = -float('Inf')
+        
+        # 5. Top K
+        if top_k is not None:
+            v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
+            logits[logits < v[:, [-1]]] = -float('Inf')
+            
+        probs = torch.nn.functional.softmax(logits, dim=-1)
+        if torch.isnan(probs).any():
+             probs = torch.zeros_like(logits)
+             probs[:, start:end] = 1.0 / (end - start)
+             
+        # DEBUG: Inspect Return Generation (Step Type 4)
+        if step_type == 4:
+            # Check max prob
+            max_prob, max_idx = torch.max(probs, dim=-1)
+            # Local index relative to start
+            local_idx = max_idx.item() - start
+            if step_i < 20: # Only first few to avoid spam
+                print(f"🐛 Step {step_i} (RET): Range=[{start}:{end}]. MaxProb={max_prob.item():.4f} at GlobIdx={max_idx.item()} (Loc={local_idx})")
+                
+        idx_next = torch.multinomial(probs, num_samples=1)
+        idx = torch.cat((idx, idx_next), dim=1)
+    return idx
+
+def get_stable_sample(bins, data, block_size, attempts=100):
+    # Find a context that ends with [DOW, H, V, V] (len % 5 == 4)
+    # And has valid values to prevent initial crash
+    valid_ctx = None
+    
+    for _ in range(attempts):
+        start_idx = np.random.randint(0, len(data) - block_size - 100)
+        # Align to block start? No, we just need a sequence.
+        # But we WANT the sequence to END at a boundary where we predict RET next.
+        # Current TRM predicts next token. 
+        # If we input [A, B, C, D], it predicts E.
+        # We want input to be [..., DOW, H, V, V] so next is RET.
+        # Input length % 5 should be 4.
+        
+        # Check alignment
+        # data[i] is the token at i.
+        # If we take chunk data[i : i+L]
+        # We want len(chunk) % 5 == 4.
+        
+        L = 254 # Ends at 253. 254 % 5 = 4. Perfect.
+        chunk = data[start_idx : start_idx + L]
+        
+        # Check values to ensure not padding/garbage
+        if np.all(chunk > 0):
+             return torch.from_numpy(chunk.astype(np.int64)).unsqueeze(0).to(DEVICE)
+             
+    # Fallback
+    return None
 
 def main():
     parser = argparse.ArgumentParser()
@@ -211,32 +305,84 @@ def main():
                         else:
                             actionable_accuracies[k] = float('nan')
             
-            # --- Debug: Decode a Sample ---
-            # Pick the first sequence of the last batch
-            # Yval: (B, T) -> Take batch 0
-            # Tokens are [DOW, Hour, Volat, Vol, Ret] repeating
+            # --- Live Hallucination: The Dream of the Model ---
+            print("🧠 Dreaming a future (Green Line)...")
             try:
-                # Load bins if not loaded (variables from main scope)
                 if 'bins' in locals():
-                    # We need to reverse decode ONE sequence
-                    # Just grab the last 5 tokens (one step)
-                    # Yval is targets. Xval is inputs.
-                    # Let's look at a sequence of inputs Xval[0]
-                    sample_seq = Xval[0, -10:].cpu().numpy() # Last 2 steps
-                    print(f"\n🔍 Debug Sample (Last 10 tokens of Batch 0): {sample_seq}")
+                    import matplotlib.pyplot as plt
                     
-                    # Simple decoder helper (approximate)
-                    def decode_token(tid):
-                        if tid < OFFSET_HOUR: return f"DOW={tid}"
-                        if tid < OFFSET_VOLAT: return f"Hr={tid-OFFSET_HOUR}"
-                        if tid < OFFSET_VOL: return f"VolaId={tid-OFFSET_VOLAT}"
-                        if tid < OFFSET_RET: return f"VolId={tid-OFFSET_VOL}"
-                        return f"RetId={tid-OFFSET_RET}"
+                    # 1. Get Stable Context
+                    # We need the full val_data to sample from
+                    # We can't easily access it here as get_batch only returns a batch.
+                    # But we can mmap it quickly just for this sample.
+                    val_path = os.path.join(DATA_DIR, 'val.bin')
+                    val_mmap = np.memmap(val_path, dtype=np.uint16, mode='r')
+                    
+                    ctx = get_stable_sample(bins, val_mmap, config.max_seq_len)
+                    
+                    if ctx is not None:
+                        # 2. Generate Dream (Green Line - Zero Suppressed)
+                        # Offsets must be packed
+                        off_dict = {
+                            'DOW': OFFSET_DOW, 'HOUR': OFFSET_HOUR,
+                            'VOLAT': OFFSET_VOLAT, 'VOL': OFFSET_VOL, 'RET': OFFSET_RET
+                        }
                         
-                    decoded = [decode_token(t) for t in sample_seq]
-                    print(f"   Decoded: {' | '.join(decoded)}")
+                        FUTURE_STEPS = 50
+                        dream_toks = generate_dream(
+                            model, ctx, 
+                            max_new_tokens=FUTURE_STEPS*5, 
+                            offsets=off_dict,
+                            temperature=1.0, 
+                            suppress_zero=True, 
+                            zero_token_id=ZERO_TOKEN_ID
+                        )
+                        
+                        # 3. Decode & Plot
+                        # We need to extract Returns from the sequence
+                        # New tokens start at ctx.shape[1]
+                        generated_part = dream_toks[0, ctx.shape[1]:].cpu().numpy()
+                        
+                        # Extract RET tokens
+                        # We want indices where (ctx_len + i) % 5 == 4
+                        # i = (4 - ctx_len) % 5
+                        ctx_len = ctx.shape[1]
+                        start_offset = (4 - ctx_len) % 5
+                        ret_tokens = generated_part[start_offset::5]
+                        
+                        # Map to values
+                        log_ret_bins = bins['log_ret']
+                        def get_val(tok):
+                            idx = np.clip(tok - OFFSET_RET, 0, len(log_ret_bins)-1)
+                            return log_ret_bins[idx]
+                        
+                        dream_rets = [get_val(t) for t in ret_tokens]
+                        
+                        # Compute Price Path
+                        # Get last known price from context? We don't have it. Assume 100.
+                        price_dream = [100.0]
+                        curr_p = 100.0
+                        for r in dream_rets:
+                            curr_p *= np.exp(r)
+                            price_dream.append(curr_p)
+                            
+                        # Plot
+                        plt.figure(figsize=(10, 5))
+                        plt.plot(price_dream, color='green', label='Dream (Forced Motion)')
+                        plt.title(f"Live Hallucination (Iter {iter_num})")
+                        plt.legend()
+                        plt.grid(True, alpha=0.3)
+                        
+                        plot_path = os.path.join(OUT_DIR, f"hallucination_step_{iter_num}.png")
+                        plt.savefig(plot_path)
+                        plt.close()
+                        print(f"📸 Saved hallucination: {plot_path}")
+                    else:
+                        print("⚠️ Could not find stable context for dream.")
             except Exception as e:
-                print(f"Debug Decode Failed: {e}")
+                print(f"❌ Hallucination Failed: {e}")
+                import traceback
+                traceback.print_exc()
 
             val_loss = losses.mean()
             val_acc = accuracies.mean()
